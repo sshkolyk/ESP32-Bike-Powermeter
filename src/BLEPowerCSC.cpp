@@ -10,14 +10,7 @@
 #define SENSORPOS_CHARACTERISTIC_UUID "00002A5D-0000-1000-8000-00805F9B34FB"
 #define POWERFEATURE_CHARACTERISTIC_UUID "00002A65-0000-1000-8000-00805F9B34FB"
 
-#define LED_PIN 2
-
-#define CSC_SERVICE_UUID "00001816-0000-1000-8000-00805F9B34FB"
-#define CSC_MEASUREMENT_CHARACTERISTIC_UUID "00002A5B-0000-1000-8000-00805F9B34FB"
-#define CSC_FEATURE_CHARACTERISTIC_UUID "00002A5C-0000-1000-8000-00805F9B34FB"
-#define powerFlags 0b0000000000000000;
-#define CSCFlags 0b10; //todo is it good practice to define flags up here?
-
+#define LED_PIN 22
 
 
 
@@ -28,13 +21,13 @@ private:
     void onConnect(BLEServer *pServer) //todo add a reference to deviceconnected
     {
         deviceConnected=true;
-        digitalWrite(LED_PIN, HIGH);
+        digitalWrite(LED_PIN, LOW);
     };
 
     void onDisconnect(BLEServer *pServer)
     {
         deviceConnected=false;
-        digitalWrite(LED_PIN, LOW);
+        digitalWrite(LED_PIN, HIGH);
     }
 };
 
@@ -47,17 +40,22 @@ private:
     BLECharacteristic *pCharacteristicSensorPos = NULL;
     BLECharacteristic *pCharacteristicPowerFeature = NULL;
     //CSC ONES
-    BLECharacteristic *pCharacteristicCSC = NULL; //the cadence reading
-    BLECharacteristic *pCharacteristicCSCFeature = NULL;
+    
 
-    uint32_t powerTxValue = 0; //the BLE-Compliant, flagged, ready to transmit power value
-    uint64_t CSCTxValue = 0;   //the BLE-Compliant, flagged, ready to transmit CSC value
+    uint8_t powerTxValue[8]; //the BLE-Compliant, flagged, ready to transmit power and cadence value 
 
     //connection indicators
     bool deviceConnected = false;
     bool oldDeviceConnected = false;
 
 public:
+    const uint8_t powerFlags[2] = {0x20, 0};
+    uint64_t lastSendCSCTimeStamp = getCSCSendTimeStamp();
+    uint32_t lastSendCSCValue = 0;
+    double_t cumulativeRevolutions = 0;
+    double_t rotationSpeed = 0;
+    double_t torqueMoment = 0;
+    uint16_t power = 0;
     BLEPowerCSC()
     { // a constructor
     }
@@ -65,8 +63,10 @@ public:
     void initialize()
     {
         pinMode(LED_PIN, OUTPUT);
+        digitalWrite(LED_PIN, HIGH);
+        
         // Create the BLE Device
-        BLEDevice::init("ESP32MauPowerMeter"); // weirdly enough names with spaces do not seem to work
+        BLEDevice::init("ESP32PowerMeter"); // weirdly enough names with spaces do not seem to work
 
         // Create the BLE Server
         pServer = BLEDevice::createServer();
@@ -74,9 +74,6 @@ public:
 
         // Create the BLE Service
         BLEService *pService = pServer->createService(CYCLING_POWER_SERVICE_UUID);
-
-        //CSC SERVICE
-        BLEService *CSCService = pServer->createService(CSC_SERVICE_UUID);
 
         // Create the needed BLE Characteristics
         pCharacteristicPower = pService->createCharacteristic(
@@ -92,36 +89,24 @@ public:
             BLECharacteristic::PROPERTY_READ);
 
         //CSC CHARACTERISTICS
-        pCharacteristicCSC = CSCService->createCharacteristic(
-            CSC_MEASUREMENT_CHARACTERISTIC_UUID,
-            BLECharacteristic::PROPERTY_NOTIFY);
-
-        pCharacteristicCSCFeature = CSCService->createCharacteristic(
-            CSC_FEATURE_CHARACTERISTIC_UUID,
-            BLECharacteristic::PROPERTY_READ);
-
+        
         // https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.descriptor.gatt.client_characteristic_configuration.xml
         // Create a BLE Descriptor
         pCharacteristicPower->addDescriptor(new BLE2902());
 
-        //CSC
-        pCharacteristicCSC->addDescriptor(new BLE2902());
-
         // Start the service
         pService->start();
 
-        //CSC
-        CSCService->start();
+        uint8_t posvalue[] = {6}; // right crank
+        pCharacteristicSensorPos->setValue(posvalue, 1);
 
-        byte posvalue = 6; // right crank
-        pCharacteristicSensorPos->setValue((uint8_t *)&posvalue, 1);
+        //ALL FEATURE SETTING
+        uint8_t powerFeature[] = {0x08, 0, 0, 0};
+        pCharacteristicPowerFeature->setValue(powerFeature, 4);
+        powerTxValue[0] = powerFlags[0]; //flags field in power message
+        powerTxValue[1] = powerFlags[1]; //
 
-        //ALL FEATURE SETTINGfor now keep it simple i can add the vectoring later
-        uint32_t powerFeature = 0b0; //just 32 old zeroes
-        pCharacteristicPowerFeature->setValue((uint8_t *)&powerFeature, 4);
-
-        uint16_t CSCFeature = 0b010; //only crank rpms supported
-        pCharacteristicCSCFeature->setValue((uint8_t *)&CSCFeature, 2);
+        lastSendCSCValue = 0; //reset revolutions counter
 
         // Start advertising
         BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
@@ -131,32 +116,34 @@ public:
         BLEDevice::startAdvertising();
     }
 
-    void sendPower(int16_t powerReading)
+    void sendData()
     {
-        powerTxValue = (powerReading << 16) | powerFlags; //very inefficient but just for readability
-        pCharacteristicPower->setValue((uint8_t *)&powerTxValue, 4);
+        power = int(fabsf(torqueMoment) * rotationSpeed);
+        uint32_t revolutions = int(cumulativeRevolutions); //change timestamp only if revolutions counter increased
+        if (revolutions > lastSendCSCValue) {
+            lastSendCSCTimeStamp = getCSCSendTimeStamp();
+            lastSendCSCValue = revolutions;
+        }
+
+        powerTxValue[2] = power & 0xff;
+        powerTxValue[3] = (power >> 8) & 0xff;
+        powerTxValue[4] = revolutions & 0xff;
+        powerTxValue[5] = (revolutions >> 8) & 0xff;
+        powerTxValue[6] = lastSendCSCTimeStamp & 0xff;
+        powerTxValue[7] = (lastSendCSCTimeStamp >> 8) & 0xff;
+        
+
+        pCharacteristicPower->setValue(powerTxValue, 8);
         pCharacteristicPower->notify();
     }
 
-    void sendValueThroughPower(uint32_t debugValue){ //debug method, used because i want to get ADC readings while not plugging
-                                                    //  any additional stuff to the circuit so as to not disturb the excitation voltage
-                                                    //also, nRF Connect shows a 4-byte value of bytes DDCCBBAA with AA being the least significant byte as AA-BB-CC-DD
-                                                    //like, the number 0x00000102 is shown as 0x02-01-00-00 
-                                                    //additional testing: sending the debugValue 0x0A0B0C0D yields  "0x0D-0C-0B-0A" which confirms the above
-        pCharacteristicPower->setValue((uint8_t *)&debugValue, 4);
-        pCharacteristicPower->notify();
-    }
-
-    void sendCSC(uint64_t lastCET, uint64_t cumulativeRevolutions)
-    {
-        CSCTxValue = (lastCET << 24) | (cumulativeRevolutions << 8) | CSCFlags;
-        pCharacteristicCSC->setValue((uint8_t *)&CSCTxValue, 5);
-        pCharacteristicCSC->notify();
+    uint64_t getCSCSendTimeStamp() {
+        return millis() * 1024 / 1000;
     }
 
     void startBroadcast()
     {
-        delay(500);                  // give the bluetooth stack the chance to get things ready
+        delay(100);                  // give the bluetooth stack the chance to get things ready
         pServer->startAdvertising(); // restart advertising
     }
 };
