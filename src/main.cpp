@@ -120,7 +120,7 @@ void setup()
 {
   adc_power_off(); //disable ADC
   
-  setCpuFrequencyMhz(80);
+  setCpuFrequencyMhz(80); //just for power saving, be careful with this!
   Serial.begin(115200);
   while (!Serial)
     delay(10); // will pause Zero, Leonardo, etc until serial console opens
@@ -183,7 +183,7 @@ void loop()
   {
     setRotations();
     setTorqueMoment();
-    bluetooth->sendData(); //the release-ready power send function, for an already calibrated and working device.
+    bluetooth->sendData(); 
     delay(29); // the minimum is 3ms according to official docs
     digitalWrite(LED_PIN, LOW);
     delay(1); //indicate data update
