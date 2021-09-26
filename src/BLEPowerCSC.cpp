@@ -62,7 +62,6 @@ public:
 
     void initialize()
     {
-        pinMode(LED_PIN, OUTPUT);
         digitalWrite(LED_PIN, HIGH);
         
         // Create the BLE Device
@@ -121,8 +120,8 @@ public:
         power = int(fabsf(torqueMoment) * rotationSpeed);
         uint32_t revolutions = int(cumulativeRevolutions); //change timestamp only if revolutions counter increased
         if (revolutions > lastSendCSCValue) {
-            lastSendCSCTimeStamp = getCSCSendTimeStamp();
             lastSendCSCValue = revolutions;
+            lastSendCSCTimeStamp = getCSCSendTimeStamp();
         }
 
         powerTxValue[2] = power & 0xff;
@@ -138,7 +137,11 @@ public:
     }
 
     uint64_t getCSCSendTimeStamp() {
-        return millis() * 1024 / 1000;
+        uint64_t extra_time = rotationSpeed > 0 ? //correction for extra partial revolution
+            1000 * (cumulativeRevolutions - lastSendCSCValue) / rotationSpeed :
+            0;
+        
+        return (millis() - extra_time) * 1024 / 1000;
     }
 
     void startBroadcast()

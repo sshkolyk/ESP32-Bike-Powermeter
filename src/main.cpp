@@ -45,6 +45,38 @@ void initScale() {
 #endif
 }
 
+#define SIGNAL_PATH_RESET 0x68
+#define I2C_SLV0_ADDR 0x37
+#define ACCEL_CONFIG 0x1C
+#define MOT_THR 0x1F // Motion detection threshold bits [7:0]
+#define MOT_DUR 0x20 // Duration counter threshold for motion interrupt generation, 1 kHz rate, LSB = 1 ms
+#define MOT_DETECT_CTRL 0x69
+#define INT_ENABLE 0x38
+#define WHO_AM_I_MPU6050 0x75 // Should return 0x68
+#define INT_STATUS 0x3A
+#define MPU6050_ADDRESS 0x68
+
+
+void writeByte(uint8_t address, uint8_t subAddress, uint8_t data) {
+  Wire.begin();
+  Wire.beginTransmission(address); // Initialize the Tx buffer
+  Wire.write(subAddress); // Put slave register address in Tx buffer
+  Wire.write(data); // Put data in Tx buffer
+  Wire.endTransmission(); // Send the Tx buffer
+}
+
+void initGyroInterrupt() {
+  writeByte(MPU6050_ADDRESS, 0x6B, 0x00);
+  writeByte(MPU6050_ADDRESS, SIGNAL_PATH_RESET, 0x07); //Reset all internal signal paths in the MPU-6050 by writing 0x07 to register 0x68;
+  writeByte(MPU6050_ADDRESS, I2C_SLV0_ADDR, 0x20); //write register 0x37 to select how to use the interrupt pin. For an active high, push-pull signal that stays until register (decimal) 58 is read, write 0x20.
+  writeByte(MPU6050_ADDRESS, ACCEL_CONFIG, 0x01); //Write register 28 (==0x1C) to set the Digital High Pass Filter, bits 3:0. For example set it to 0x01 for 5Hz. (These 3 bits are grey in the data sheet, but they are used! Leaving them 0 means the filter always outputs 0.)
+  writeByte(MPU6050_ADDRESS, MOT_THR, 10); //Write the desired Motion threshold to register 0x1F (For example, write decimal 20).  
+  writeByte(MPU6050_ADDRESS, MOT_DUR, 40); //Set motion detect duration to 1  ms; LSB is 1 ms @ 1 kHz rate  
+  writeByte(MPU6050_ADDRESS, MOT_DETECT_CTRL, 0x15); //to register 0x69, write the motion detection decrement and a few other settings (for example write 0x15 to set both free-fall and motion decrements to 1 and accelerometer start-up delay to 5ms total by adding 1ms. )   
+  writeByte(MPU6050_ADDRESS, INT_ENABLE, 0x40); //write register 0x38, bit 6 (0x40), to enable motion detection interrupt.     
+  //writeByte(MPU6050_ADDRESS, 0x37, 160); // now INT pin is active low
+}
+
 void initGyro() {
   Wire.begin(GYRO_SDA_PIN, GYRO_SCK_PIN);
   // Try to initialize!
@@ -64,29 +96,48 @@ void initGyro() {
   //260 or 184, or 94, or 44 or 21 or 10 or 5
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   mpu.enableSleep(true);
-  pinMode(GYRO_INT_PIN, INPUT_PULLUP); //pullup interrupt ping
+  initGyroInterrupt();
+  pinMode(GYRO_INT_PIN, INPUT_PULLUP); //pullup interrupt pin
+}
+
+void print_wakeup_reason(){
+  esp_sleep_wakeup_cause_t wakeup_reason;
+
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  switch(wakeup_reason)
+  {
+    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
+    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
+    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
+    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
+    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
+  }
 }
 
 void setup()
 {
-  for (int i = 0; i < 20; i++) {
-    digitalWrite(LED_PIN, LOW);
-    delay(200);
-    digitalWrite(LED_PIN, HIGH);
-    delay(200);
-  }
   adc_power_off(); //disable ADC
   
   setCpuFrequencyMhz(80);
   Serial.begin(115200);
   while (!Serial)
     delay(10); // will pause Zero, Leonardo, etc until serial console opens
+  print_wakeup_reason();
   Serial.printf("CPU freq = %dMHz\n", getCpuFrequencyMhz());
   initScale();
   initGyro();
   
+  pinMode(LED_PIN, OUTPUT);
   bluetooth->initialize();
   Serial.println("bluetooth initialized");
+  for (int i = 0; i < 20; i++) {
+    digitalWrite(LED_PIN, LOW);
+    delay(200);
+    digitalWrite(LED_PIN, HIGH);
+    delay(200);
+  }
 }
 
 
@@ -116,8 +167,8 @@ void setTorqueMoment() {
     float units = loadCell.get_units();
     bluetooth->torqueMoment = units * TRANSFORM_FORCE_CONSTANT * CRUNK_LENGTH * 2 ; //2 - because of 2 cranks
 #ifdef DEBUG
-    Serial.printf("Nm = %f,\toffset=%lu,\tForce = %f\n", bluetooth->torqueMoment, loadCell.get_offset(), units);
-    delay(100);
+    /*Serial.printf("Nm = %f,\toffset=%lu,\tForce = %f\n", bluetooth->torqueMoment, loadCell.get_offset(), units);
+    delay(100);*/
 #endif
   }
 }
@@ -133,7 +184,7 @@ void loop()
     setRotations();
     setTorqueMoment();
     bluetooth->sendData(); //the release-ready power send function, for an already calibrated and working device.
-    delay(49); // the minimum is 3ms according to official docs
+    delay(29); // the minimum is 3ms according to official docs
     digitalWrite(LED_PIN, LOW);
     delay(1); //indicate data update
     digitalWrite(LED_PIN, HIGH);
@@ -145,6 +196,7 @@ void loop()
     loadCell.power_down();
     bluetooth->startBroadcast();
     oldDeviceConnected = deviceConnected;
+    Serial.println("bluetooth disconnected");
   } 
   // connecting
   else if (deviceConnected && !oldDeviceConnected)
@@ -153,21 +205,27 @@ void loop()
     loadCell.power_up();
     lastCSCEventTimeStamp = millis();
     bluetooth->cumulativeRevolutions = 0;
-    bluetooth->lastSendCSCTimeStamp = bluetooth->getCSCSendTimeStamp();
     bluetooth->lastSendCSCValue = 0;
     bluetooth->rotationSpeed = 0;
     bluetooth->torqueMoment = 0;
+    bluetooth->lastSendCSCTimeStamp = bluetooth->getCSCSendTimeStamp();
     // do stuff here on connecting
     oldDeviceConnected = deviceConnected;
+    Serial.println("bluetooth connected");
   }
   else if (!deviceConnected) {
-    delay(15000);
-    if (deviceConnected) return;
-    /*mpu.enableSleep(false);
+    for (int i = 0; i < 240; i++) {
+      delay(500);
+      if (deviceConnected) return;
+    }
+    mpu.enableSleep(false);
+    loadCell.power_down();
     esp_sleep_enable_ext0_wakeup(GYRO_INT_PIN, HIGH);
     Serial.println("going to deep sleep");
-    esp_deep_sleep_start();*/
-    esp_sleep_enable_timer_wakeup(5000000u); //microseconds
-    esp_light_sleep_start();
+    digitalWrite(LED_PIN, LOW);
+    delay(200);
+    esp_deep_sleep_start();
+    /*esp_sleep_enable_timer_wakeup(450000u); //microseconds
+      esp_light_sleep_start();*/
   }
 }
