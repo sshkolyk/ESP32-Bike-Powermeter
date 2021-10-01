@@ -53,7 +53,7 @@ public:
     uint64_t lastSendCSCTimeStamp = getCSCSendTimeStamp();
     uint32_t lastSendCSCValue = 0;
     double_t cumulativeRevolutions = 0;
-    double_t rotationSpeed = 0;
+    double_t rotationRadiansPerSecond = 0;
     double_t torqueMoment = 0;
     uint16_t power = 0;
     BLEPowerCSC()
@@ -115,9 +115,13 @@ public:
         BLEDevice::startAdvertising();
     }
 
+    double_t getRotationsPerSecond() {
+        return rotationRadiansPerSecond / 6.283;
+    }
+
     void sendData()
     {
-        power = int(fabsf(torqueMoment) * rotationSpeed);
+        power = int(fabsf(torqueMoment) * rotationRadiansPerSecond);
         uint32_t revolutions = int(cumulativeRevolutions); //change timestamp only if revolutions counter increased
         if (revolutions > lastSendCSCValue) {
             lastSendCSCValue = revolutions;
@@ -137,8 +141,9 @@ public:
     }
 
     uint64_t getCSCSendTimeStamp() {
-        uint64_t extra_time = rotationSpeed > 0 ? //correction for extra partial revolution
-            1000 * (cumulativeRevolutions - lastSendCSCValue) / rotationSpeed :
+        double_t rotationsPerSecond = getRotationsPerSecond();
+        uint64_t extra_time = rotationsPerSecond > 0 ? //correction for extra partial revolution
+            1000 * (cumulativeRevolutions - lastSendCSCValue) / rotationsPerSecond :
             0;
         
         return (millis() - extra_time) * 1024 / 1000;

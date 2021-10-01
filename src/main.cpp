@@ -10,7 +10,7 @@
 #define LOADCELL_OFFSET 768451
 //in meters
 #define CRUNK_LENGTH 0.175
-//for translate grammforce to Nm
+//for translate grammforce to Newtons
 #define TRANSFORM_FORCE_CONSTANT 0.00980665
 
 //todo comment in production
@@ -151,9 +151,9 @@ void setRotations() {
   /* Get new sensor events with the readings */
   mpu.getEvent(&a, &g, &temp);
   //in rotations per second z axis
-  bluetooth->rotationSpeed = fabs(g.gyro.z / 6.283);
+  bluetooth->rotationRadiansPerSecond = fabs(g.gyro.z);
   currentCSCEventTimeStamp = millis();
-  bluetooth->cumulativeRevolutions += abs(currentCSCEventTimeStamp - lastCSCEventTimeStamp) * bluetooth->rotationSpeed / 1000;
+  bluetooth->cumulativeRevolutions += abs(currentCSCEventTimeStamp - lastCSCEventTimeStamp) * bluetooth->getRotationsPerSecond() / 1000;
 #ifdef DEBUG
   //Serial.printf("delta = %lf,\t speed= %lf\n", abs(currentCSCEventTimeStamp - lastCSCEventTimeStamp) * bluetooth->rotationSpeed / 1000, bluetooth->rotationSpeed);
   //Serial.printf("heading = %f\n", g.gyro.heading);
@@ -206,7 +206,7 @@ void loop()
     lastCSCEventTimeStamp = millis();
     bluetooth->cumulativeRevolutions = 0;
     bluetooth->lastSendCSCValue = 0;
-    bluetooth->rotationSpeed = 0;
+    bluetooth->rotationRadiansPerSecond = 0;
     bluetooth->torqueMoment = 0;
     bluetooth->lastSendCSCTimeStamp = bluetooth->getCSCSendTimeStamp();
     // do stuff here on connecting
